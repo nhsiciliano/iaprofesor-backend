@@ -1,0 +1,235 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id          String @id @default(cuid())
+  email       String   @unique
+  fullName    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relaciones
+  sessions    ChatSession[]
+  progress    SubjectProgress[]
+  goals       Goal[]
+  achievements UserAchievement[]
+}
+
+model ChatSession {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  
+  // Información de la sesión
+  title     String?
+  subject   String?  // 'mathematics', 'history', 'grammar', etc.
+  difficulty String? // 'beginner', 'intermediate', 'advanced'
+  
+  // Metadatos
+  isActive  Boolean @default(true)
+  duration  Int?    // en segundos
+  conceptsLearned String[] // array de conceptos aprendidos
+  
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  lastMessageAt DateTime?
+  
+  messages  ChatMessage[]
+  
+  @@index([userId, subject])
+  @@index([createdAt])
+}
+
+model ChatMessage {
+  id          String   @id @default(cuid())
+  sessionId   String
+  session     ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  
+  // Contenido del mensaje
+  content     String
+  isUserMessage Boolean
+  
+  // Metadatos del mensaje
+  messageType String? // 'question', 'answer', 'explanation', 'hint', 'encouragement'
+  difficulty  String? // nivel de dificultad del contenido
+  concepts    String[] // conceptos mencionados en el mensaje
+  
+  // Análisis de IA
+  aiAnalysis  Json?   // análisis del mensaje por la IA
+  
+  // Timestamps
+  createdAt   DateTime @default(now())
+  
+  @@index([sessionId, createdAt])
+}
+
+// Modelo para trackear progreso por materia
+model SubjectProgress {
+  id          String @id @default(cuid())
+  userId      String
+  user        User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  subject     String // 'mathematics', 'history', 'grammar'
+  
+  // Estadísticas
+  totalSessions Int @default(0)
+  totalMessages Int @default(0)
+  totalTimeSpent Int @default(0) // en segundos
+  conceptsLearned String[] // array de conceptos
+  
+  // Nivel y progreso
+  skillLevel  String @default("beginner") // 'beginner', 'intermediate', 'advanced', 'expert'
+  progress    Float  @default(0.0) // porcentaje 0-100
+  
+  // Rendimiento
+  averageResponseTime Float? // tiempo promedio de respuesta
+  accuracyRate Float? // tasa de precisión en ejercicios
+  
+  // Timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastActivity DateTime?
+  
+  @@unique([userId, subject])
+  @@index([userId])
+}
+
+// Sistema de objetivos
+model Goal {
+  id          String @id @default(cuid())
+  userId      String
+  user        User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  title       String
+  description String
+  
+  // Configuración del objetivo
+  type        String // 'daily_sessions', 'weekly_sessions', 'concepts_learned', etc.
+  targetValue Int
+  currentValue Int @default(0)
+  
+  // Metadatos
+  subject     String? // materia específica (opcional)
+  priority    String @default("medium") // 'low', 'medium', 'high', 'critical'
+  status      String @default("active") // 'active', 'paused', 'completed', 'expired'
+  
+  // Timestamps
+  deadline    DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  completedAt DateTime?
+  
+  @@index([userId, status])
+}
+
+model LearningPath {
+  id                String        @id @default(cuid())
+  title             String
+  description       String
+  subject           String
+  difficulty        String
+  estimatedDuration Int
+  tags              String[]
+  isRecommended     Boolean       @default(false)
+  enrollmentCount   Int           @default(0)
+  averageRating     Float         @default(0)
+  prerequisites     String[]
+  learningObjectives String[]
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  modules           LearningModule[]
+  userProgress      UserLearningPath[]
+}
+
+model LearningModule {
+  id                String   @id @default(cuid())
+  pathId            String
+  path              LearningPath @relation(fields: [pathId], references: [id], onDelete: Cascade)
+  title             String
+  description       String
+  /// Orden secuencial del módulo dentro del path
+  order             Int
+  estimatedDuration Int
+  type              String
+  content           Json
+  isRequired        Boolean @default(true)
+  prerequisites     String[]
+
+  @@index([pathId, order])
+}
+
+model UserLearningPath {
+  id               String  @id @default(cuid())
+  userId           String
+  pathId           String
+  path             LearningPath @relation(fields: [pathId], references: [id], onDelete: Cascade)
+  status           String  @default("in_progress")
+  progress         Float   @default(0)
+  currentModuleId  String?
+  completedModules String[]
+  startedAt        DateTime @default(now())
+  lastActivityAt   DateTime @default(now())
+  completedAt      DateTime?
+  totalTimeSpent   Int      @default(0)
+  moduleProgress   Json
+  score            Float?
+
+  @@unique([userId, pathId])
+  @@index([pathId])
+}
+
+// Sistema de logros
+model Achievement {
+  id          String @id @default(cuid())
+  
+  title       String
+  description String
+  icon        String // nombre del icono o URL
+  
+  // Configuración del logro
+  type        String // 'milestone', 'streak', 'skill', etc.
+  category    String // 'learning', 'engagement', 'consistency'
+  rarity      String @default("common") // 'common', 'uncommon', 'rare', 'epic', 'legendary'
+  
+  // Criterios
+  requirements Json // criterios para desbloquear
+  points      Int @default(0)
+  
+  // Metadatos
+  isSecret    Boolean @default(false)
+  isActive    Boolean @default(true)
+  
+  // Timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relaciones
+  userAchievements UserAchievement[]
+}
+
+model UserAchievement {
+  id            String @id @default(cuid())
+  userId        String
+  achievementId String
+  
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+  
+  // Estado del logro
+  isCompleted   Boolean @default(false)
+  progress      Float   @default(0.0) // progreso hacia el logro 0-100
+  
+  // Timestamps
+  unlockedAt    DateTime @default(now())
+  completedAt   DateTime?
+  
+  @@unique([userId, achievementId])
+  @@index([userId])
+}

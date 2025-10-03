@@ -14,3 +14,5 @@ typings/
 coverage/
 package-lock.json
 dist/
+/generated/prisma
+.env*

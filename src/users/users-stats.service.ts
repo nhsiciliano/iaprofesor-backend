@@ -19,58 +19,54 @@ export class UsersStatsService {
 
   async getUserStats(userId: string): Promise<UserStats> {
     try {
-      // Obtener todas las sesiones del usuario
-      const sessions = await this.prisma.chatSession.findMany({
-        where: {
-          userId,
-          isActive: true
-        },
-        include: {
-          messages: {
-            where: {
-              isUserMessage: true
-            }
-          }
-        },
-        orderBy: {
-          createdAt: 'desc'
-        }
-      });
+      const [
+        sessionsCompleted,
+        messagesSent,
+        durationAgg,
+        lastSession,
+        subjectProgress,
+        currentStreak,
+      ] = await Promise.all([
+        this.prisma.chatSession.count({
+          where: { userId, isActive: true },
+        }),
+        this.prisma.chatMessage.count({
+          where: {
+            isUserMessage: true,
+            session: {
+              userId,
+              isActive: true,
+            },
+          },
+        }),
+        this.prisma.chatSession.aggregate({
+          where: { userId, isActive: true },
+          _sum: { duration: true },
+        }),
+        this.prisma.chatSession.findFirst({
+          where: { userId, isActive: true },
+          orderBy: { updatedAt: 'desc' },
+          select: { updatedAt: true },
+        }),
+        this.prisma.subjectProgress.findMany({
+          where: { userId },
+          select: { subject: true, conceptsLearned: true },
+        }),
+        this.calculateCurrentStreak(userId),
+      ]);
 
-      // Calcular estadísticas básicas
-      const sessionsCompleted = sessions.length;
-      const messagesSent = sessions.reduce((total, session) => total + session.messages.length, 0);
-      
-      // Calcular tiempo de estudio total (en minutos)
-      const studyTimeMinutes = sessions.reduce((total, session) => {
-        return total + (session.duration || 0);
-      }, 0) / 60; // Convertir de segundos a minutos
-
-      // Obtener materias únicas
-      const uniqueSubjects = new Set(sessions.map(s => s.subject).filter(Boolean));
-      const totalSubjects = uniqueSubjects.size;
-
-      // Calcular duración promedio de sesión
-      const averageSessionDuration = sessionsCompleted > 0 
-        ? Math.round(studyTimeMinutes / sessionsCompleted) 
+      const studyTimeMinutes = (durationAgg._sum.duration ?? 0) / 60;
+      const totalSubjects = subjectProgress.length;
+      const averageSessionDuration = sessionsCompleted > 0
+        ? Math.round(studyTimeMinutes / sessionsCompleted)
         : 0;
 
-      // Calcular conceptos aprendidos únicos
-      const allConcepts: string[] = [];
-      sessions.forEach(s => {
-        if (s.conceptsLearned) {
-          allConcepts.push(...s.conceptsLearned);
-        }
-      });
+      const allConcepts = subjectProgress.reduce<string[]>(
+        (acc, entry) => acc.concat(entry.conceptsLearned ?? []),
+        [],
+      );
       const conceptsLearned = new Set(allConcepts).size;
-
-      // Calcular racha actual
-      const currentStreak = await this.calculateCurrentStreak(userId);
-
-      // Última actividad
-      const lastActivity = sessions.length > 0 
-        ? sessions[0].updatedAt.toISOString() 
-        : null;
+      const lastActivity = lastSession?.updatedAt.toISOString() ?? null;
 
       return {
         sessionsCompleted,
@@ -104,8 +100,15 @@ export class UsersStatsService {
         isActive: true,
         ...(subject ? { subject } : {}),
       },
-      include: {
-        messages: true,
+      select: {
+        id: true,
+        subject: true,
+        duration: true,
+        conceptsLearned: true,
+        createdAt: true,
+        updatedAt: true,
+        lastMessageAt: true,
+        _count: { select: { messages: true } },
       },
       orderBy: { updatedAt: 'desc' },
       take: limit,
@@ -114,7 +117,7 @@ export class UsersStatsService {
     return sessions.map((session) => ({
       id: session.id,
       subject: session.subject ?? undefined,
-      messageCount: session.messages.length,
+      messageCount: session._count.messages,
       duration: session.duration ? Math.round(session.duration / 60) : 0,
       conceptsLearned: session.conceptsLearned ?? [],
       createdAt: session.createdAt.toISOString(),
@@ -145,7 +148,13 @@ export class UsersStatsService {
 
     const sessions = await this.prisma.chatSession.findMany({
       where,
-      include: { messages: true },
+      select: {
+        createdAt: true,
+        duration: true,
+        conceptsLearned: true,
+        subject: true,
+        _count: { select: { messages: true } },
+      },
       orderBy: { createdAt: 'asc' },
     });
 
@@ -153,14 +162,14 @@ export class UsersStatsService {
     const detailed = await this.getDetailedProgress(userId);
 
     const totalSessions = sessions.length;
-    const totalMessages = sessions.reduce((sum, session) => sum + session.messages.length, 0);
+    const totalMessages = sessions.reduce((sum, session) => sum + session._count.messages, 0);
     const totalStudyTime = sessions.reduce((sum, session) => sum + (session.duration || 0), 0) / 60;
     const uniqueConcepts = new Set<string>();
     sessions.forEach((session) => {
       (session.conceptsLearned ?? []).forEach((concept) => uniqueConcepts.add(concept));
     });
 
-    const subjectBreakdown = (detailed.subjectProgress || [])
+    const subjectBreakdownFromProgress = (detailed.subjectProgress || [])
       .filter((progress: any) =>
         !subjects?.length || (progress.subject && subjects.includes(progress.subject)),
       )
@@ -179,6 +188,61 @@ export class UsersStatsService {
         progress: progress.progress ?? 0,
         trending: 'stable' as const,
       }));
+
+    const sessionSubjects = sessions.reduce((acc, session) => {
+      if (!session.subject) {
+        return acc;
+      }
+      const existing = acc.get(session.subject) ?? {
+        subject: session.subject,
+        sessions: 0,
+        messages: 0,
+        conceptsLearned: new Set<string>(),
+        timeSpent: 0,
+        lastActivity: session.createdAt,
+      };
+
+      existing.sessions += 1;
+      existing.messages += session._count.messages;
+      existing.timeSpent += session.duration ?? 0;
+      (session.conceptsLearned ?? []).forEach((concept) => existing.conceptsLearned.add(concept));
+      if (session.createdAt > existing.lastActivity) {
+        existing.lastActivity = session.createdAt;
+      }
+
+      acc.set(session.subject, existing);
+      return acc;
+    }, new Map<string, {
+      subject: string;
+      sessions: number;
+      messages: number;
+      conceptsLearned: Set<string>;
+      timeSpent: number;
+      lastActivity: Date;
+    }>());
+
+    const subjectBreakdownFallback = Array.from(sessionSubjects.values()).map((entry) => ({
+      subject: entry.subject,
+      sessions: entry.sessions,
+      messages: entry.messages,
+      conceptsLearned: entry.conceptsLearned.size,
+      timeSpent: Math.round(entry.timeSpent / 60),
+      averageSessionDuration: entry.sessions > 0 ? Math.round((entry.timeSpent / 60) / entry.sessions) : 0,
+      lastActivity: entry.lastActivity.toISOString(),
+      skillLevel: 'beginner' as const,
+      progress: Math.min(100, Math.round((entry.conceptsLearned.size / 20) * 100)),
+      trending: 'stable' as const,
+    }));
+
+    const subjectMap = new Map<string, any>();
+    subjectBreakdownFromProgress.forEach((entry) => subjectMap.set(entry.subject, entry));
+    subjectBreakdownFallback.forEach((entry) => {
+      if (!subjectMap.has(entry.subject)) {
+        subjectMap.set(entry.subject, entry);
+      }
+    });
+
+    const subjectBreakdown = Array.from(subjectMap.values());
 
     const activityData = this.buildActivityData(sessions);
 
@@ -326,17 +390,29 @@ export class UsersStatsService {
             gte: thirtyDaysAgo
           }
         },
-        include: {
-          messages: {
-            where: {
-              isUserMessage: true
-            }
-          }
+        select: {
+          id: true,
+          createdAt: true,
+          duration: true,
+          conceptsLearned: true,
+          subject: true,
         },
         orderBy: {
           createdAt: 'desc'
         }
       });
+
+      const recentSessionIds = recentActivity.map((session) => session.id);
+      const messageCounts = recentSessionIds.length > 0
+        ? await this.prisma.chatMessage.groupBy({
+          by: ['sessionId'],
+          where: { sessionId: { in: recentSessionIds }, isUserMessage: true },
+          _count: { _all: true },
+        })
+        : [];
+
+      const messageCountMap = new Map<string, number>();
+      messageCounts.forEach((entry) => messageCountMap.set(entry.sessionId, entry._count._all));
 
       // Agrupar actividad por día
       const dailyActivity = recentActivity.reduce((acc, session) => {
@@ -352,7 +428,7 @@ export class UsersStatsService {
           };
         }
         acc[date].sessions++;
-        acc[date].messages += session.messages.length;
+        acc[date].messages += messageCountMap.get(session.id) ?? 0;
         acc[date].studyTime += session.duration ? Math.round(session.duration / 60) : 0;
         acc[date].concepts += session.conceptsLearned ? session.conceptsLearned.length : 0;
         if (session.subject) {
@@ -405,7 +481,15 @@ export class UsersStatsService {
     return start;
   }
 
-  private buildActivityData(sessions: any[]) {
+  private buildActivityData(
+    sessions: Array<{
+      createdAt: Date;
+      duration: number | null;
+      conceptsLearned: string[] | null;
+      subject: string | null;
+      _count: { messages: number };
+    }>
+  ) {
     const acc = sessions.reduce((map, session) => {
       const date = session.createdAt.toISOString().split('T')[0];
       if (!map[date]) {
@@ -420,7 +504,7 @@ export class UsersStatsService {
       }
 
       map[date].sessions += 1;
-      map[date].messages += session.messages.length;
+      map[date].messages += session._count.messages;
       map[date].studyTime += session.duration ? Math.round(session.duration / 60) : 0;
       map[date].conceptsLearned += session.conceptsLearned ? session.conceptsLearned.length : 0;
       if (session.subject) {

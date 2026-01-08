@@ -5,12 +5,40 @@ export class CreateSessionDto {
   @ApiProperty({
     description: 'The subject for the tutoring session',
     example: 'mathematics',
-    enum: ['mathematics', 'history', 'grammar'],
+    enum: [
+      'mathematics',
+      'history',
+      'grammar',
+      'science',
+      'physics',
+      'chemistry',
+      'biology',
+      'philosophy',
+      'literature',
+      'geography',
+      'programming',
+      'accounting',
+      'finance'
+    ],
     required: false,
   })
   @IsOptional()
   @IsString()
-  @IsIn(['mathematics', 'history', 'grammar'])
+  @IsIn([
+    'mathematics',
+    'history',
+    'grammar',
+    'science',
+    'physics',
+    'chemistry',
+    'biology',
+    'philosophy',
+    'literature',
+    'geography',
+    'programming',
+    'accounting',
+    'finance'
+  ])
   subject?: string;
 
   @ApiProperty({

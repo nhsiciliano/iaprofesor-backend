@@ -37,24 +37,14 @@ export class AuthService {
    * Usado por la estrategia JWT
    */
   async validateToken(token: string) {
-    console.log('AuthService - Validating token with Supabase...');
     try {
       const { data, error } = await this.supabase.auth.getUser(token);
-      
-      console.log('AuthService - Supabase response:', { 
-        hasUser: !!data.user, 
-        error: error?.message || 'none',
-        userId: data.user?.id,
-        email: data.user?.email 
-      });
-      
+
       if (error) {
-        console.error('AuthService - Supabase auth error:', error.message);
         return null;
       }
       
       if (!data.user) {
-        console.error('AuthService - No user data returned from Supabase');
         return null;
       }
 
@@ -65,7 +55,6 @@ export class AuthService {
         ...data.user,
       };
     } catch (error) {
-      console.error('AuthService - Exception during token validation:', error.message);
       return null;
     }
   }

@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString } from 'class-validator';
+import { IsNotEmpty, IsString, IsOptional } from 'class-validator';
 
 export class CreateMessageDto {
   @ApiProperty({
@@ -9,4 +9,11 @@ export class CreateMessageDto {
   @IsString()
   @IsNotEmpty()
   content: string;
+
+  @ApiProperty({
+    description: 'Optional array of attachments (images/files)',
+    required: false,
+  })
+  @IsOptional()
+  attachments?: any[];
 }

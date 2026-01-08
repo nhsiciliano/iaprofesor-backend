@@ -7,17 +7,25 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   
   // Configurar CORS para permitir peticiones desde el frontend
+  const corsOrigins = process.env.CORS_ORIGINS
+    ? process.env.CORS_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean)
+    : [
+        'http://localhost:3000', // Frontend en desarrollo
+        'https://localhost:3000', // Frontend HTTPS en desarrollo
+      ];
+
   app.enableCors({
-    origin: [
-      'http://localhost:3000', // Frontend en desarrollo
-      'https://localhost:3000', // Frontend HTTPS en desarrollo
-    ],
+    origin: corsOrigins,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   });
   
-  app.useGlobalPipes(new ValidationPipe());
+  app.useGlobalPipes(new ValidationPipe({
+    whitelist: true,
+    forbidNonWhitelisted: true,
+    transform: true,
+  }));
 
   const config = new DocumentBuilder()
     .setTitle('IA Profesor API')

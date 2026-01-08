@@ -8,7 +8,7 @@ type AchievementStatus = 'completed' | 'in_progress' | 'locked';
 export class AchievementsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async getCatalog(filters?: { category?: string; rarity?: string }): Promise<Achievement[]> {
+  async getCatalog(filters?: { category?: string; rarity?: string }) {
     const where: Prisma.AchievementWhereInput = {};
     if (filters?.category) {
       where.category = filters.category;
@@ -17,10 +17,24 @@ export class AchievementsService {
       where.rarity = filters.rarity;
     }
 
-    return this.prisma.achievement.findMany({
-      where,
-      orderBy: { createdAt: 'asc' },
-    });
+    const [achievements, unlockCounts] = await Promise.all([
+      this.prisma.achievement.findMany({
+        where,
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.prisma.userAchievement.groupBy({
+        by: ['achievementId'],
+        where: { isCompleted: true },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const unlockMap = new Map<string, number>();
+    unlockCounts.forEach((entry) => unlockMap.set(entry.achievementId, entry._count._all));
+
+    return achievements.map((achievement) =>
+      this.mapAchievement(achievement, unlockMap.get(achievement.id) ?? 0),
+    );
   }
 
   async getUserAchievements(userId: string, status?: AchievementStatus) {
@@ -41,7 +55,16 @@ export class AchievementsService {
 
       if (userAchievement) {
         return {
-          ...userAchievement,
+          id: userAchievement.id,
+          userId: userAchievement.userId,
+          achievementId: userAchievement.achievementId,
+          unlockedAt: userAchievement.unlockedAt.toISOString(),
+          progress: userAchievement.progress,
+          isCompleted: userAchievement.isCompleted,
+          completedAt: userAchievement.completedAt?.toISOString(),
+          currentValues: userAchievement.currentValues ?? {},
+          notificationSent: userAchievement.notificationSent ?? false,
+          achievement: this.mapAchievement(userAchievement.achievement, achievement.unlockedCount),
           status: this.resolveStatus(userAchievement),
         };
       }
@@ -50,11 +73,13 @@ export class AchievementsService {
         id: `virtual-${achievement.id}`,
         userId,
         achievementId: achievement.id,
-        achievement,
-        isCompleted: false,
-        progress: 0,
         unlockedAt: null,
+        progress: 0,
+        isCompleted: false,
         completedAt: null,
+        currentValues: {},
+        notificationSent: false,
+        achievement,
         status: 'locked' as AchievementStatus,
       };
     });
@@ -63,12 +88,26 @@ export class AchievementsService {
   }
 
   async getRecentAchievements(userId: string, limit = 5) {
-    return this.prisma.userAchievement.findMany({
+    const recent = await this.prisma.userAchievement.findMany({
       where: { userId, isCompleted: true },
       include: { achievement: true },
       orderBy: { completedAt: 'desc' },
       take: limit,
     });
+
+    return recent.map((entry) => ({
+      id: entry.id,
+      userId: entry.userId,
+      achievementId: entry.achievementId,
+      unlockedAt: entry.unlockedAt.toISOString(),
+      progress: entry.progress,
+      isCompleted: entry.isCompleted,
+      completedAt: entry.completedAt?.toISOString(),
+      currentValues: entry.currentValues ?? {},
+      notificationSent: entry.notificationSent ?? false,
+      achievement: this.mapAchievement(entry.achievement, 0),
+      status: this.resolveStatus(entry),
+    }));
   }
 
   async markAchievementNotified(userId: string, achievementId: string) {
@@ -85,8 +124,47 @@ export class AchievementsService {
       throw new NotFoundException('Achievement not found for user');
     }
 
-    // Placeholder: persistencia futura para estado de notificación
+    await this.prisma.userAchievement.update({
+      where: { id: record.id },
+      data: { notificationSent: true },
+    });
+
     return { success: true, notifiedAt: new Date().toISOString() };
+  }
+
+  private mapAchievement(achievement: Achievement, unlockedCount: number) {
+    return {
+      id: achievement.id,
+      title: achievement.title,
+      description: achievement.description,
+      type: achievement.type as any,
+      category: achievement.category as any,
+      rarity: achievement.rarity as any,
+      icon: achievement.icon,
+      badgeUrl: undefined,
+      requirements: this.normalizeArray(achievement.requirements),
+      rewards: this.normalizeArray(achievement.rewards),
+      isSecret: achievement.isSecret,
+      points: achievement.points,
+      unlockedCount,
+      createdAt: achievement.createdAt.toISOString(),
+    };
+  }
+
+  private normalizeArray(value: Prisma.JsonValue | null | undefined) {
+    if (!value) {
+      return [];
+    }
+
+    if (Array.isArray(value)) {
+      return value;
+    }
+
+    if (typeof value === 'object' && value !== null) {
+      return [value];
+    }
+
+    return [];
   }
 
   private resolveStatus(entry: UserAchievement): AchievementStatus {

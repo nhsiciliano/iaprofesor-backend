@@ -7,19 +7,24 @@ import {
   Get,
   Param,
   Query,
+  Sse,
+  MessageEvent,
+  BadRequestException,
 } from '@nestjs/common';
 import { TutorService } from './tutor.service';
 import { AuthGuard } from '@nestjs/passport';
 import { CreateMessageDto } from './dto/create-message.dto';
 import { CreateSessionDto } from './dto/create-session.dto';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiParam, ApiQuery } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
+import { Observable, map } from 'rxjs';
 
 @ApiTags('tutor')
 @ApiBearerAuth()
 @Controller('tutor')
 @UseGuards(AuthGuard())
 export class TutorController {
-  constructor(private readonly tutorService: TutorService) {}
+  constructor(private readonly tutorService: TutorService) { }
 
   @Post('sessions')
   @ApiOperation({ summary: 'Create a new chat session with optional subject' })
@@ -41,10 +46,11 @@ export class TutorController {
   @Get('sessions')
   @ApiOperation({ summary: 'Get user chat sessions' })
   @ApiQuery({ name: 'subject', required: false, description: 'Filter by subject' })
+  @ApiQuery({ name: 'search', required: false, description: 'Search in subject or messages' })
   @ApiResponse({ status: 200, description: 'Return user sessions.' })
-  async getUserSessions(@Req() req, @Query('subject') subject?: string) {
+  async getUserSessions(@Req() req, @Query('subject') subject?: string, @Query('search') search?: string) {
     const userId = req.user.sub;
-    return this.tutorService.getUserSessions(userId, subject);
+    return this.tutorService.getUserSessions(userId, subject, search);
   }
 
   @Get('progress/:subject')
@@ -68,10 +74,11 @@ export class TutorController {
   }
 
   @Post('sessions/:id/messages')
+  @Throttle({ default: { limit: 10, ttl: 60000 } }) // 10 requests per minute for AI endpoints
   @ApiOperation({ summary: 'Add a message to a chat session' })
   @ApiParam({ name: 'id', description: 'The ID of the chat session' })
-  @ApiResponse({ 
-    status: 201, 
+  @ApiResponse({
+    status: 201,
     description: 'Message added successfully with AI response.',
     schema: {
       type: 'object',
@@ -81,7 +88,7 @@ export class TutorController {
           description: 'The user message that was saved'
         },
         assistantMessage: {
-          type: 'object', 
+          type: 'object',
           description: 'The AI tutor response'
         }
       }
@@ -95,8 +102,26 @@ export class TutorController {
     @Body() createMessageDto: CreateMessageDto,
   ) {
     const userId = req.user.sub;
-    const { content } = createMessageDto;
-    return this.tutorService.addMessage(sessionId, userId, content);
+    const { content, attachments } = createMessageDto;
+    return this.tutorService.addMessage(sessionId, userId, content, attachments);
+  }
+
+  @Post('sessions/:id/messages/prepare')
+  @Throttle({ default: { limit: 10, ttl: 60000 } }) // 10 requests per minute for AI endpoints
+  @ApiOperation({ summary: 'Create a user message for streaming' })
+  @ApiParam({ name: 'id', description: 'The ID of the chat session' })
+  @ApiResponse({
+    status: 201,
+    description: 'User message created successfully.',
+  })
+  async prepareMessage(
+    @Param('id') sessionId: string,
+    @Req() req,
+    @Body() createMessageDto: CreateMessageDto,
+  ) {
+    const userId = req.user.sub;
+    const { content, attachments } = createMessageDto;
+    return this.tutorService.createUserMessage(sessionId, userId, content, attachments);
   }
 
   @Post('sessions/:id/duration')
@@ -112,5 +137,34 @@ export class TutorController {
   ) {
     const userId = req.user.sub;
     return this.tutorService.updateSessionDuration(sessionId, userId, durationDto.durationSeconds);
+  }
+
+  @Sse('sessions/:id/messages/stream')
+  @Throttle({ default: { limit: 10, ttl: 60000 } }) // 10 requests per minute for AI endpoints
+  @ApiOperation({ summary: 'Stream AI response for a message using Server-Sent Events' })
+  @ApiParam({ name: 'id', description: 'The ID of the chat session' })
+  @ApiQuery({ name: 'messageId', required: true, description: 'User message id to stream from' })
+  @ApiResponse({
+    status: 200,
+    description: 'Stream of AI response chunks',
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 404, description: 'Chat session not found.' })
+  streamMessage(
+    @Param('id') sessionId: string,
+    @Req() req,
+    @Query('messageId') messageId?: string,
+  ): Observable<MessageEvent> {
+    const userId = req.user.sub;
+    if (!messageId) {
+      throw new BadRequestException('messageId is required');
+    }
+
+    return this.tutorService.addMessageStreamFromMessage(sessionId, userId, messageId).pipe(
+      map((data): MessageEvent => ({
+        type: data.event,
+        data: data.data,
+      })),
+    );
   }
 }

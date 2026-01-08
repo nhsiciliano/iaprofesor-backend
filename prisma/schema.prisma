@@ -1,6 +1,7 @@
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 generator client {
@@ -11,6 +12,7 @@ model User {
   id          String @id @default(cuid())
   email       String   @unique
   fullName    String?
+  role        String   @default("user") // 'user', 'admin'
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
@@ -19,6 +21,8 @@ model User {
   progress    SubjectProgress[]
   goals       Goal[]
   achievements UserAchievement[]
+  notes       Note[]
+  profile     UserProfile?
 }
 
 model ChatSession {
@@ -63,6 +67,7 @@ model ChatMessage {
   
   // Análisis de IA
   aiAnalysis  Json?   // análisis del mensaje por la IA
+  attachments Json?   // adjuntos (imágenes, archivos)
   
   // Timestamps
   createdAt   DateTime @default(now())
@@ -87,6 +92,8 @@ model SubjectProgress {
   // Nivel y progreso
   skillLevel  String @default("beginner") // 'beginner', 'intermediate', 'advanced', 'expert'
   progress    Float  @default(0.0) // porcentaje 0-100
+  xp          Int    @default(0)
+  level       Int    @default(1)
   
   // Rendimiento
   averageResponseTime Float? // tiempo promedio de respuesta
@@ -118,6 +125,7 @@ model Goal {
   // Metadatos
   subject     String? // materia específica (opcional)
   priority    String @default("medium") // 'low', 'medium', 'high', 'critical'
+  category    String @default("learning") // 'learning', 'engagement', 'skill', 'achievement', 'habit'
   status      String @default("active") // 'active', 'paused', 'completed', 'expired'
   
   // Timestamps
@@ -125,8 +133,27 @@ model Goal {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   completedAt DateTime?
+
+  milestones  GoalMilestone[]
   
   @@index([userId, status])
+}
+
+model GoalMilestone {
+  id          String   @id @default(cuid())
+  goalId      String
+  goal        Goal     @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  targetValue Int
+  isCompleted Boolean  @default(false)
+  completedAt DateTime?
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([goalId])
+  @@index([goalId, order])
 }
 
 model LearningPath {
@@ -200,6 +227,7 @@ model Achievement {
   
   // Criterios
   requirements Json // criterios para desbloquear
+  rewards     Json? // recompensas asociadas
   points      Int @default(0)
   
   // Metadatos
@@ -225,6 +253,8 @@ model UserAchievement {
   // Estado del logro
   isCompleted   Boolean @default(false)
   progress      Float   @default(0.0) // progreso hacia el logro 0-100
+  currentValues Json?
+  notificationSent Boolean @default(false)
   
   // Timestamps
   unlockedAt    DateTime @default(now())
@@ -232,4 +262,44 @@ model UserAchievement {
   
   @@unique([userId, achievementId])
   @@index([userId])
+}
+
+model Subject {
+  id           String   @id // 'mathematics', 'physics', etc.
+  name         String
+  systemPrompt String   @db.Text
+  difficulty   String   // 'beginner', 'intermediate', 'advanced'
+  concepts     String[]
+  
+  isActive     Boolean  @default(true)
+  
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Note {
+  id        String   @id @default(uuid())
+  content   String
+  tags      String[]
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  subjectId String?
+  sessionId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([subjectId])
+}
+
+model UserProfile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  displayName String?
+  bio         String?
+  avatar      String?
+  preferences Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }

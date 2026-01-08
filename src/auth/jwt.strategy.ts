@@ -12,15 +12,10 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   }
 
   async validate(req: any, done: Function) {
-    console.log('JWT Strategy - Custom validation started');
-    
     // Extraer el token raw del header Authorization
     const token = req.headers.authorization?.replace('Bearer ', '');
     
-    console.log('JWT Strategy - Validating token:', token ? `${token.substring(0, 20)}...` : 'NO TOKEN');
-    
     if (!token) {
-      console.error('JWT Strategy - No token found in request');
       return done(new UnauthorizedException('Token no encontrado'), false);
     }
 
@@ -29,19 +24,18 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       const user = await this.authService.validateToken(token);
       
       if (!user) {
-        console.error('JWT Strategy - Token validation returned null');
         return done(new UnauthorizedException('Token inválido o expirado'), false);
       }
 
-      console.log('JWT Strategy - Token validated for user:', user.email);
-
       // Crear/actualizar perfil local si es necesario
+      let role = 'user';
       try {
-        await this.authService.getOrCreateUserProfile(
+        const localUser = await this.authService.getOrCreateUserProfile(
           user.sub,
           user.email,
           user.user_metadata?.full_name || user.email
         );
+        role = localUser.role;
       } catch (error) {
         console.warn('No se pudo sincronizar perfil local:', error.message);
       }
@@ -49,14 +43,13 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       const result = {
         sub: user.sub,
         email: user.email,
+        role: role,
         user_metadata: user.user_metadata,
         ...user,
       };
       
-      console.log('JWT Strategy - Validation successful');
       return done(null, result);
     } catch (error) {
-      console.error('JWT Strategy - Validation error:', error.message);
       return done(new UnauthorizedException('Error al validar token: ' + error.message), false);
     }
   }

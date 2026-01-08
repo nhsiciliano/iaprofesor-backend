@@ -1,7 +1,9 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { AiService } from '../ai/ai.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { LevelingService } from '../gamification/leveling.service';
 import { Prisma } from '@prisma/client';
+import { Observable, Subject } from 'rxjs';
 
 interface SubjectConfig {
   name: string;
@@ -20,73 +22,83 @@ interface MessageAnalysis {
 
 @Injectable()
 export class TutorService {
-  private readonly subjectConfigs: Record<string, SubjectConfig> = {
-    mathematics: {
-      name: 'Matemáticas',
-      systemPrompt: `Eres 'IA Profesor', un tutor socrático especializado en matemáticas. 
-      
-Tu metodología:
-      - NUNCA des la respuesta directa o final
-      - Haz preguntas guía que lleven al estudiante a descubrir la solución
-      - Usa analogías y ejemplos concretos
-      - Descompón problemas complejos en pasos más simples
-      - Celebra los aciertos y reorienta suavemente los errores
-      - Adapta el nivel de dificultad según las respuestas del estudiante
-      
-      Áreas que dominas: álgebra, geometría, cálculo, estadística, trigonometría.
-      
-      Si el estudiante se frustra, ofrece pistas más directas pero manteniendo el enfoque socrático.`,
-      difficulty: 'intermediate',
-      concepts: ['álgebra', 'geometría', 'cálculo', 'estadística', 'ecuaciones', 'funciones']
-    },
-    history: {
-      name: 'Historia',
-      systemPrompt: `Eres 'IA Profesor', un tutor socrático especializado en historia.
-      
-      Tu metodología:
-      - Conecta eventos históricos con el presente
-      - Haz preguntas que promuevan el pensamiento crítico
-      - Ayuda a analizar causas y consecuencias
-      - Fomenta la comprensión de diferentes perspectivas históricas
-      - Usa relatos y anécdotas para hacer la historia más vívida
-      
-      Nunca des información como simple memorización, siempre busca la comprensión profunda.`,
-      difficulty: 'intermediate',
-      concepts: ['civilizaciones', 'guerras', 'política', 'cultura', 'economía', 'sociedades']
-    },
-    grammar: {
-      name: 'Gramática',
-      systemPrompt: `Eres 'IA Profesor', un tutor socrático especializado en gramática y lenguaje.
-      
-      Tu metodología:
-      - Enseña reglas gramaticales a través de ejemplos prácticos
-      - Corrige errores explicando el "por qué"
-      - Fomenta la escritura creativa aplicando las reglas
-      - Haz que el estudiante identifique patrones en el lenguaje
-      - Conecta la gramática con la comunicación efectiva
-      
-      Haz que el aprendizaje del lenguaje sea dinámico y aplicable.`,
-      difficulty: 'intermediate',
-      concepts: ['sintaxis', 'morfología', 'semántica', 'ortografía', 'puntuación', 'estilo']
-    }
-  };
+  private subjects: Map<string, SubjectConfig> = new Map();
 
   constructor(
     private readonly aiService: AiService,
     private readonly prisma: PrismaService,
-  ) {}
+    private readonly levelingService: LevelingService,
+  ) { }
+
+  async onModuleInit() {
+    await this.loadSubjects();
+  }
+
+  async loadSubjects() {
+    try {
+      const subjects = await this.prisma.subject.findMany({
+        where: { isActive: true }
+      });
+
+      this.subjects.clear();
+      subjects.forEach(subject => {
+        this.subjects.set(subject.id, {
+          name: subject.name,
+          systemPrompt: subject.systemPrompt,
+          difficulty: subject.difficulty,
+          concepts: subject.concepts
+        });
+      });
+      console.log(`Loaded ${this.subjects.size} subjects from database`);
+    } catch (error) {
+      console.error('Failed to load subjects from database:', error);
+    }
+  }
+
+  async updateSubject(id: string, data: Partial<SubjectConfig> & { isActive?: boolean }) {
+    try {
+      // 1. Update in Database
+      const updatedSubject = await this.prisma.subject.update({
+        where: { id },
+        data: {
+          ...data,
+          updatedAt: new Date()
+        }
+      });
+
+      // 2. Update in-memory cache
+      if (updatedSubject.isActive) {
+        this.subjects.set(updatedSubject.id, {
+          name: updatedSubject.name,
+          systemPrompt: updatedSubject.systemPrompt,
+          difficulty: updatedSubject.difficulty,
+          concepts: updatedSubject.concepts
+        });
+      } else {
+        this.subjects.delete(updatedSubject.id);
+      }
+
+      return updatedSubject;
+    } catch (error) {
+      console.error(`Failed to update subject ${id}:`, error);
+      throw error;
+    }
+  }
 
   // Crear sesión de chat con contexto de materia
   async createChatSession(userId: string, subject?: string) {
-    const sessionData: any = { 
+    const sessionData: any = {
       userId,
       isActive: true,
       duration: 0 // Inicializar duración en 0 segundos
     };
 
-    if (subject && this.subjectConfigs[subject]) {
+    if (subject) {
       sessionData.subject = subject;
-      sessionData.difficulty = this.subjectConfigs[subject].difficulty;
+      if (this.subjects.has(subject)) {
+        const config = this.subjects.get(subject);
+        sessionData.difficulty = config.difficulty;
+      }
     }
 
     const session = await this.prisma.chatSession.create({
@@ -120,7 +132,7 @@ Tu metodología:
   }
 
   // Añadir mensaje con análisis inteligente
-  async addMessage(sessionId: string, userId: string, content: string) {
+  async addMessage(sessionId: string, userId: string, content: string, attachments: any[] = []) {
     const session = await this.prisma.chatSession.findUnique({
       where: { id: sessionId },
       include: {
@@ -137,7 +149,7 @@ Tu metodología:
 
     // Analizar el mensaje del usuario
     const messageAnalysis = await this.analyzeUserMessage(content, session.subject);
-    
+
     // Guardar mensaje del usuario
     const userMessage = await this.prisma.chatMessage.create({
       data: {
@@ -147,7 +159,8 @@ Tu metodología:
         messageType: messageAnalysis.messageType,
         difficulty: messageAnalysis.difficulty,
         concepts: messageAnalysis.concepts,
-        aiAnalysis: messageAnalysis as any
+        aiAnalysis: messageAnalysis as any,
+        attachments: attachments ?? [],
       },
     });
 
@@ -159,6 +172,7 @@ Tu metodología:
     const aiResponse = await this.aiService.getTutorResponse(
       content,
       systemPrompt + "\n\nContexto de la conversación:\n" + context,
+      attachments
     );
 
     // Analizar respuesta de la IA
@@ -185,21 +199,314 @@ Tu metodología:
       await this.updateSubjectProgress(userId, session.subject, messageAnalysis.concepts, { newMessages: 1 });
     }
 
+    // Award XP for sending a message
+    let xpResult = null;
+    if (session.subject) {
+      xpResult = await this.levelingService.awardXp(userId, session.subject, 10);
+    }
+
     return {
       userMessage,
-      assistantMessage: aiMessage
+      assistantMessage: aiMessage,
+      xpAwarded: xpResult,
     };
+  }
+
+  async createUserMessage(
+    sessionId: string,
+    userId: string,
+    content: string,
+    attachments: any[] = [],
+  ) {
+    const session = await this.prisma.chatSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, userId: true, subject: true },
+    });
+
+    if (!session || session.userId !== userId) {
+      throw new UnauthorizedException('Access to this chat session is denied.');
+    }
+
+    const messageAnalysis = await this.analyzeUserMessage(content, session.subject);
+
+    const userMessage = await this.prisma.chatMessage.create({
+      data: {
+        sessionId,
+        content,
+        isUserMessage: true,
+        messageType: messageAnalysis.messageType,
+        difficulty: messageAnalysis.difficulty,
+        concepts: messageAnalysis.concepts,
+        aiAnalysis: messageAnalysis as any,
+        attachments: attachments ?? [],
+      },
+    });
+
+    await this.updateSessionMetrics(sessionId, messageAnalysis.concepts);
+
+    if (session.subject) {
+      await this.updateSubjectProgress(userId, session.subject, messageAnalysis.concepts, { newMessages: 1 });
+    }
+
+    return { userMessage };
+  }
+
+  // Streaming version of addMessage for SSE
+  addMessageStream(
+    sessionId: string,
+    userId: string,
+    content: string,
+    attachments: any[] = [],
+  ): Observable<{ event: string; data: string }> {
+    const subject$ = new Subject<{ event: string; data: string }>();
+
+    // Process in background
+    (async () => {
+      try {
+        const session = await this.prisma.chatSession.findUnique({
+          where: { id: sessionId },
+          include: {
+            messages: {
+              orderBy: { createdAt: 'desc' },
+              take: 10,
+            },
+          },
+        });
+
+        if (!session || session.userId !== userId) {
+          subject$.next({
+            event: 'error',
+            data: JSON.stringify({ message: 'Access denied' }),
+          });
+          subject$.complete();
+          return;
+        }
+
+        // Analyze user message
+        const messageAnalysis = await this.analyzeUserMessage(content, session.subject);
+
+        // Save user message
+        const userMessage = await this.prisma.chatMessage.create({
+          data: {
+            sessionId,
+            content,
+            isUserMessage: true,
+            messageType: messageAnalysis.messageType,
+            difficulty: messageAnalysis.difficulty,
+            concepts: messageAnalysis.concepts,
+            aiAnalysis: messageAnalysis as any,
+            attachments: attachments ?? [],
+          },
+        });
+
+        // Send user message saved event
+        subject$.next({
+          event: 'user_message',
+          data: JSON.stringify(userMessage),
+        });
+
+        // Build context for AI
+        const context = this.buildConversationContext(session);
+        const systemPrompt = this.getSystemPrompt(session.subject, messageAnalysis);
+        const fullPrompt = systemPrompt + '\n\nContexto de la conversación:\n' + context;
+
+        // Stream AI response
+        let fullResponse = '';
+        const stream = this.aiService.getTutorResponseStream(content, fullPrompt, attachments);
+
+        for await (const chunk of stream) {
+          if (chunk.type === 'chunk') {
+            fullResponse += chunk.content;
+            subject$.next({
+              event: 'chunk',
+              data: JSON.stringify({ content: chunk.content }),
+            });
+          } else if (chunk.type === 'done') {
+            fullResponse = chunk.content;
+          } else if (chunk.type === 'error') {
+            fullResponse = chunk.content;
+          }
+        }
+
+        // Analyze AI response
+        const aiAnalysis = await this.analyzeAIResponse(fullResponse, messageAnalysis);
+
+        // Save AI message
+        const aiMessage = await this.prisma.chatMessage.create({
+          data: {
+            sessionId,
+            content: fullResponse,
+            isUserMessage: false,
+            messageType: aiAnalysis.messageType,
+            difficulty: aiAnalysis.difficulty,
+            concepts: aiAnalysis.concepts,
+            aiAnalysis: aiAnalysis as any,
+          },
+        });
+
+        // Update session metrics
+        await this.updateSessionMetrics(sessionId, messageAnalysis.concepts);
+
+        // Update user progress
+        if (session.subject) {
+          await this.updateSubjectProgress(
+            userId,
+            session.subject,
+            messageAnalysis.concepts,
+            { newMessages: 1 },
+          );
+        }
+
+        // Send completion event
+        subject$.next({
+          event: 'done',
+          data: JSON.stringify({
+            userMessage,
+            assistantMessage: aiMessage,
+          }),
+        });
+
+        subject$.complete();
+      } catch (error) {
+        subject$.next({
+          event: 'error',
+          data: JSON.stringify({ message: error.message || 'Unknown error' }),
+        });
+        subject$.complete();
+      }
+    })();
+
+    return subject$.asObservable();
+  }
+
+  // Streaming for a previously created user message
+  addMessageStreamFromMessage(
+    sessionId: string,
+    userId: string,
+    messageId: string,
+  ): Observable<{ event: string; data: string }> {
+    const subject$ = new Subject<{ event: string; data: string }>();
+
+    (async () => {
+      try {
+        const session = await this.prisma.chatSession.findUnique({
+          where: { id: sessionId },
+          include: {
+            messages: {
+              orderBy: { createdAt: 'desc' },
+              take: 10,
+            },
+          },
+        });
+
+        if (!session || session.userId !== userId) {
+          subject$.next({
+            event: 'error',
+            data: JSON.stringify({ message: 'Access denied' }),
+          });
+          subject$.complete();
+          return;
+        }
+
+        const userMessage = await this.prisma.chatMessage.findUnique({
+          where: { id: messageId },
+        });
+
+        if (!userMessage || userMessage.sessionId !== sessionId || !userMessage.isUserMessage) {
+          subject$.next({
+            event: 'error',
+            data: JSON.stringify({ message: 'User message not found' }),
+          });
+          subject$.complete();
+          return;
+        }
+
+        const messageAnalysis =
+          (userMessage.aiAnalysis as unknown as MessageAnalysis) ??
+          (await this.analyzeUserMessage(userMessage.content, session.subject));
+
+        subject$.next({
+          event: 'user_message',
+          data: JSON.stringify(userMessage),
+        });
+
+        const context = this.buildConversationContext(session);
+        const systemPrompt = this.getSystemPrompt(session.subject, messageAnalysis);
+        const fullPrompt = systemPrompt + '\n\nContexto de la conversación:\n' + context;
+
+        let fullResponse = '';
+        const stream = this.aiService.getTutorResponseStream(
+          userMessage.content,
+          fullPrompt,
+          (userMessage.attachments as any[]) ?? [],
+        );
+
+        for await (const chunk of stream) {
+          if (chunk.type === 'chunk') {
+            fullResponse += chunk.content;
+            subject$.next({
+              event: 'chunk',
+              data: JSON.stringify({ content: chunk.content }),
+            });
+          } else if (chunk.type === 'done') {
+            fullResponse = chunk.content;
+          } else if (chunk.type === 'error') {
+            fullResponse = chunk.content;
+          }
+        }
+
+        const aiAnalysis = await this.analyzeAIResponse(fullResponse, messageAnalysis);
+
+        const aiMessage = await this.prisma.chatMessage.create({
+          data: {
+            sessionId,
+            content: fullResponse,
+            isUserMessage: false,
+            messageType: aiAnalysis.messageType,
+            difficulty: aiAnalysis.difficulty,
+            concepts: aiAnalysis.concepts,
+            aiAnalysis: aiAnalysis as any,
+          },
+        });
+
+        await this.updateSessionMetrics(sessionId, []);
+
+        let xpResult = null;
+        if (session.subject) {
+          xpResult = await this.levelingService.awardXp(userId, session.subject, 10);
+        }
+
+        subject$.next({
+          event: 'done',
+          data: JSON.stringify({
+            userMessage,
+            assistantMessage: aiMessage,
+            xpAwarded: xpResult,
+          }),
+        });
+
+        subject$.complete();
+      } catch (error) {
+        subject$.next({
+          event: 'error',
+          data: JSON.stringify({ message: error.message || 'Unknown error' }),
+        });
+        subject$.complete();
+      }
+    })();
+
+    return subject$.asObservable();
   }
 
   // Métodos auxiliares
   private async analyzeUserMessage(content: string, subject?: string): Promise<MessageAnalysis> {
     // Análisis básico del mensaje (en producción usar IA más sofisticada)
     const lowerContent = content.toLowerCase();
-    
+
     let messageType: MessageAnalysis['messageType'] = 'question';
     if (lowerContent.includes('?')) messageType = 'question';
     else if (lowerContent.includes('creo que') || lowerContent.includes('pienso que')) messageType = 'answer';
-    
+
     let difficulty: MessageAnalysis['difficulty'] = 'beginner';
     if (content.length > 100 || lowerContent.includes('complejo') || lowerContent.includes('avanzado')) {
       difficulty = 'advanced';
@@ -208,9 +515,9 @@ Tu metodología:
     }
 
     const concepts: string[] = [];
-    if (subject && this.subjectConfigs[subject]) {
-      const subjectConcepts = this.subjectConfigs[subject].concepts;
-      concepts.push(...subjectConcepts.filter(concept => 
+    if (subject && this.subjects.has(subject)) {
+      const subjectConcepts = this.subjects.get(subject).concepts;
+      concepts.push(...subjectConcepts.filter(concept =>
         lowerContent.includes(concept.toLowerCase())
       ));
     }
@@ -225,12 +532,12 @@ Tu metodología:
 
   private async analyzeAIResponse(response: string, userAnalysis: MessageAnalysis): Promise<MessageAnalysis> {
     const lowerResponse = response.toLowerCase();
-    
+
     let messageType: MessageAnalysis['messageType'] = 'explanation';
     if (lowerResponse.includes('?')) messageType = 'question';
     else if (lowerResponse.includes('excelente') || lowerResponse.includes('bien hecho')) messageType = 'encouragement';
     else if (lowerResponse.includes('pista') || lowerResponse.includes('intenta')) messageType = 'hint';
-    
+
     return {
       messageType,
       difficulty: userAnalysis.difficulty,
@@ -241,26 +548,26 @@ Tu metodología:
 
   private buildConversationContext(session: any): string {
     if (!session.messages || session.messages.length === 0) return "Esta es una nueva conversación.";
-    
+
     const recentMessages = session.messages.slice(-6); // Últimos 6 mensajes
-    return recentMessages.map(msg => 
-      `${msg.isUserMessage ? 'Estudiante' : 'Tutor'}: ${msg.content}`
+    return recentMessages.map(msg =>
+      `${msg.isUserMessage ? 'Estudiante' : 'Tutor'}: ${msg.content} `
     ).join('\n');
   }
 
   private getSystemPrompt(subject?: string, analysis?: MessageAnalysis): string {
-    if (subject && this.subjectConfigs[subject]) {
-      const config = this.subjectConfigs[subject];
+    if (subject && this.subjects.has(subject)) {
+      const config = this.subjects.get(subject);
       let prompt = config.systemPrompt;
-      
+
       if (analysis?.needsGuidance) {
         prompt += "\n\nEl estudiante parece necesitar más orientación. Sé más específico en tus preguntas guía.";
       }
-      
+
       return prompt;
     }
-    
-    return `Eres 'IA Profesor', un tutor socrático. Haz preguntas guía para ayudar al estudiante a descubrir las respuestas por sí mismo.`;
+
+    return `Eres 'IA Profesor', un tutor socrático.Haz preguntas guía para ayudar al estudiante a descubrir las respuestas por sí mismo.`;
   }
 
   private async updateSessionMetrics(sessionId: string, concepts: string[]) {
@@ -268,21 +575,21 @@ Tu metodología:
       lastMessageAt: new Date(),
       updatedAt: new Date()
     };
-    
+
     if (concepts.length > 0) {
       // Añadir conceptos únicos a la sesión
       const session = await this.prisma.chatSession.findUnique({
         where: { id: sessionId },
         select: { conceptsLearned: true }
       });
-      
+
       if (session) {
         const existingConcepts = session.conceptsLearned || [];
         const newConcepts = [...new Set([...existingConcepts, ...concepts])];
         updates.conceptsLearned = newConcepts;
       }
     }
-    
+
     await this.prisma.chatSession.update({
       where: { id: sessionId },
       data: updates
@@ -306,7 +613,7 @@ Tu metodología:
 
     if (existingProgress) {
       // Actualizar progreso existente
-      const updatedConcepts = newConcepts.length > 0 
+      const updatedConcepts = newConcepts.length > 0
         ? [...new Set([...existingProgress.conceptsLearned, ...newConcepts])]
         : existingProgress.conceptsLearned;
       const data: Prisma.SubjectProgressUpdateInput = {
@@ -344,11 +651,24 @@ Tu metodología:
   }
 
   // Métodos para obtener estadísticas y sesiones
-  async getUserSessions(userId: string, subject?: string) {
+  async getUserSessions(userId: string, subject?: string, search?: string) {
     const where: any = { userId, isActive: true };
     if (subject) where.subject = subject;
 
-    return this.prisma.chatSession.findMany({
+    if (search) {
+      where.OR = [
+        { subject: { contains: search, mode: 'insensitive' } },
+        {
+          messages: {
+            some: {
+              content: { contains: search, mode: 'insensitive' }
+            }
+          }
+        }
+      ];
+    }
+
+    const sessions = await this.prisma.chatSession.findMany({
       where,
       include: {
         messages: {
@@ -364,6 +684,11 @@ Tu metodología:
       },
       orderBy: { updatedAt: 'desc' }
     });
+
+    return sessions.map((session) => ({
+      ...session,
+      subject: session.subject ?? 'general',
+    }));
   }
 
   async getSubjectProgress(userId: string) {
@@ -464,11 +789,17 @@ Tu metodología:
   }
 
   async getAvailableSubjects() {
-    return Object.keys(this.subjectConfigs).map(key => ({
-      id: key,
-      name: this.subjectConfigs[key].name,
-      difficulty: this.subjectConfigs[key].difficulty,
-      concepts: this.subjectConfigs[key].concepts
+    return Array.from(this.subjects.entries()).map(([id, config]) => ({
+      id,
+      name: config.name,
+      difficulty: config.difficulty,
+      concepts: config.concepts
     }));
+  }
+
+  async getAllSubjectsForAdmin() {
+    return this.prisma.subject.findMany({
+      orderBy: { name: 'asc' }
+    });
   }
 }

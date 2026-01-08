@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsDateString, IsEnum, IsInt, IsNotEmpty, IsOptional, IsPositive, IsString, MaxLength } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsArray, IsDateString, IsEnum, IsInt, IsNotEmpty, IsOptional, IsPositive, IsString, MaxLength, ValidateNested } from 'class-validator';
 
 export enum GoalPriority {
   LOW = 'low',
@@ -16,6 +17,14 @@ export enum GoalStatus {
   CANCELLED = 'cancelled',
 }
 
+export enum GoalCategory {
+  LEARNING = 'learning',
+  ENGAGEMENT = 'engagement',
+  SKILL = 'skill',
+  ACHIEVEMENT = 'achievement',
+  HABIT = 'habit',
+}
+
 export enum GoalType {
   DAILY_SESSIONS = 'daily_sessions',
   WEEKLY_SESSIONS = 'weekly_sessions',
@@ -27,6 +36,30 @@ export enum GoalType {
   SKILL_LEVEL = 'skill_level',
   SUBJECT_MASTERY = 'subject_mastery',
   CUSTOM = 'custom',
+}
+
+export class GoalMilestoneDto {
+  @ApiProperty({ description: 'Título del hito', example: 'Completar 2 sesiones' })
+  @IsString()
+  @MaxLength(120)
+  @IsNotEmpty()
+  title: string;
+
+  @ApiPropertyOptional({ description: 'Descripción del hito', example: 'Primer avance de la semana' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  description?: string;
+
+  @ApiProperty({ description: 'Valor objetivo del hito', example: 2 })
+  @IsInt()
+  @IsPositive()
+  targetValue: number;
+
+  @ApiPropertyOptional({ description: 'Orden del hito', example: 1 })
+  @IsOptional()
+  @IsInt()
+  order?: number;
 }
 
 export class CreateGoalDto {
@@ -70,6 +103,15 @@ export class CreateGoalDto {
   @IsEnum(GoalPriority)
   priority?: GoalPriority;
 
+  @ApiPropertyOptional({
+    description: 'Categoría del objetivo',
+    enum: GoalCategory,
+    default: GoalCategory.LEARNING,
+  })
+  @IsOptional()
+  @IsEnum(GoalCategory)
+  category?: GoalCategory;
+
   @ApiPropertyOptional({ description: 'Fecha límite en formato ISO', example: '2024-12-31T23:59:59.000Z' })
   @IsOptional()
   @IsDateString()
@@ -83,4 +125,11 @@ export class CreateGoalDto {
   @IsOptional()
   @IsEnum(GoalStatus)
   status?: GoalStatus;
+
+  @ApiPropertyOptional({ description: 'Hitos del objetivo', type: [GoalMilestoneDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => GoalMilestoneDto)
+  milestones?: GoalMilestoneDto[];
 }

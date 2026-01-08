@@ -6,7 +6,10 @@ import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiParam, ApiQuery }
 import { CreateGoalDto, GoalStatus } from './dto/create-goal.dto';
 import { UpdateGoalDto } from './dto/update-goal.dto';
 import { UpdateGoalStatusDto } from './dto/update-goal-status.dto';
-import { Goal } from '@prisma/client';
+import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdateUserProfileDto } from './dto/update-user-profile.dto';
+import { CreateUserProfileDto } from './dto/create-user-profile.dto';
+import { Prisma } from '@prisma/client';
 
 @ApiTags('users')
 @ApiBearerAuth()
@@ -32,9 +35,112 @@ export class UsersController {
   @ApiOperation({ summary: 'Update current user profile' })
   @ApiResponse({ status: 200, description: 'User profile updated successfully.' })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
-  async updateMe(@Req() req, @Body() updateUserDto: any) {
+  async updateMe(@Req() req, @Body() updateUserDto: UpdateUserDto) {
     const userId = req.user.sub;
     return this.usersService.updateMe(userId, updateUserDto);
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Get user profile by id' })
+  @ApiParam({ name: 'id', description: 'User id' })
+  @ApiResponse({ status: 200, description: 'Return user profile.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  async getUserById(@Req() req, @Param('id') id: string) {
+    return this.usersService.getUserById(req.user.sub, id, req.user.role);
+  }
+
+  @Patch(':id')
+  @ApiOperation({ summary: 'Update user profile by id' })
+  @ApiParam({ name: 'id', description: 'User id' })
+  @ApiResponse({ status: 200, description: 'User profile updated successfully.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  async updateUserById(
+    @Req() req,
+    @Param('id') id: string,
+    @Body() updateUserDto: UpdateUserDto,
+  ) {
+    return this.usersService.updateUserById(req.user.sub, id, req.user.role, updateUserDto);
+  }
+
+  @Get('me/profile')
+  @ApiOperation({ summary: 'Get extended user profile' })
+  @ApiResponse({ status: 200, description: 'Return extended user profile.' })
+  async getProfile(@Req() req) {
+    const userId = req.user.sub;
+    const [user, profile, stats] = await Promise.all([
+      this.usersService.getMe(userId),
+      this.usersService.getUserProfile(userId),
+      this.usersStatsService.getUserStats(userId),
+    ]);
+
+    const preferences = this.resolvePreferences(profile?.preferences);
+    const mappedStats = this.mapStats(stats);
+
+    return {
+      id: profile?.id ?? `profile-${userId}`,
+      userId,
+      role: user?.role,
+      displayName: profile?.displayName ?? user?.fullName ?? user?.email ?? 'Estudiante',
+      bio: profile?.bio ?? '',
+      avatar: profile?.avatar ?? undefined,
+      preferences,
+      stats: mappedStats,
+      createdAt: profile?.createdAt?.toISOString(),
+      updatedAt: profile?.updatedAt?.toISOString(),
+    };
+  }
+
+  @Patch('me/profile')
+  @ApiOperation({ summary: 'Update extended user profile' })
+  @ApiResponse({ status: 200, description: 'User profile updated successfully.' })
+  async updateProfile(@Req() req, @Body() updateProfileDto: UpdateUserProfileDto) {
+    const userId = req.user.sub;
+    const profile = await this.usersService.upsertUserProfile(userId, updateProfileDto);
+
+    if (updateProfileDto.displayName) {
+      await this.usersService.updateMe(userId, { displayName: updateProfileDto.displayName });
+    }
+
+    const stats = await this.usersStatsService.getUserStats(userId);
+    const preferences = this.resolvePreferences(profile.preferences);
+    const mappedStats = this.mapStats(stats);
+
+    return {
+      id: profile.id,
+      userId,
+      role: req.user.role,
+      displayName: profile.displayName ?? undefined,
+      bio: profile.bio ?? '',
+      avatar: profile.avatar ?? undefined,
+      preferences,
+      stats: mappedStats,
+      createdAt: profile.createdAt.toISOString(),
+      updatedAt: profile.updatedAt.toISOString(),
+    };
+  }
+
+  @Post('profile')
+  @ApiOperation({ summary: 'Create or update a user profile record (legacy)' })
+  @ApiResponse({ status: 201, description: 'Profile created or updated.' })
+  async createProfile(@Req() req, @Body() payload: CreateUserProfileDto) {
+    const userId = req.user.sub;
+    if (payload.userId !== userId) {
+      return this.usersService.getUserById(userId, payload.userId, req.user.role);
+    }
+
+    await this.usersService.updateMe(userId, { fullName: payload.fullName });
+
+    const profile = await this.usersService.upsertUserProfile(userId, {
+      displayName: payload.fullName,
+    });
+
+    return {
+      id: profile.id,
+      userId,
+      displayName: profile.displayName ?? payload.fullName,
+      createdAt: profile.createdAt.toISOString(),
+      updatedAt: profile.updatedAt.toISOString(),
+    };
   }
 
   @Get('me/stats')
@@ -197,7 +303,7 @@ export class UsersController {
     return { success: true };
   }
 
-  private mapGoal(goal: Goal) {
+  private mapGoal(goal: Prisma.GoalGetPayload<{ include: { milestones: true } }>) {
     const progress = goal.targetValue > 0
       ? Math.min(100, Math.round((goal.currentValue / goal.targetValue) * 100))
       : 0;
@@ -212,15 +318,69 @@ export class UsersController {
       currentValue: goal.currentValue,
       status: goal.status,
       priority: goal.priority,
+      category: goal.category ?? 'learning',
       subject: goal.subject ?? undefined,
       deadline: goal.deadline ? goal.deadline.toISOString() : undefined,
       createdAt: goal.createdAt.toISOString(),
       updatedAt: goal.updatedAt.toISOString(),
       completedAt: goal.completedAt ? goal.completedAt.toISOString() : undefined,
       progress,
-      category: 'learning',
-      milestones: [],
+      milestones: (goal.milestones ?? []).map((milestone) => ({
+        id: milestone.id,
+        goalId: goal.id,
+        title: milestone.title,
+        description: milestone.description ?? '',
+        targetValue: milestone.targetValue,
+        isCompleted: milestone.isCompleted,
+        completedAt: milestone.completedAt ? milestone.completedAt.toISOString() : undefined,
+        order: milestone.order,
+      })),
       isCustom: goal.type === 'custom',
+    };
+  }
+
+  private resolvePreferences(rawPreferences?: any) {
+    const defaults = {
+      language: 'es',
+      timezone: 'UTC',
+      notifications: {
+        email: true,
+        push: false,
+        reminders: true,
+      },
+      learningStyle: 'visual',
+      difficultyPreference: 'beginner',
+      subjectsOfInterest: [],
+    };
+
+    if (!rawPreferences || typeof rawPreferences !== 'object') {
+      return defaults;
+    }
+
+    return {
+      ...defaults,
+      ...rawPreferences,
+      notifications: {
+        ...defaults.notifications,
+        ...(rawPreferences.notifications ?? {}),
+      },
+      subjectsOfInterest: Array.isArray(rawPreferences.subjectsOfInterest)
+        ? rawPreferences.subjectsOfInterest
+        : defaults.subjectsOfInterest,
+    };
+  }
+
+  private mapStats(stats: any) {
+    return {
+      totalSessions: Number(stats?.sessionsCompleted ?? 0),
+      totalMessages: Number(stats?.messagesSent ?? 0),
+      conceptsLearned: Number(stats?.conceptsLearned ?? 0),
+      achievementsUnlocked: Number(stats?.achievementsUnlocked ?? 0),
+      streakDays: Number(stats?.currentStreak ?? 0),
+      totalStudyTime: Number(stats?.studyTimeMinutes ?? 0),
+      averageSessionDuration: Number(stats?.averageSessionDuration ?? 0),
+      favoriteSubjects: Array.isArray(stats?.favoriteSubjects) ? stats.favoriteSubjects : [],
+      lastActiveDate: stats?.lastActivity ?? undefined,
     };
   }
 

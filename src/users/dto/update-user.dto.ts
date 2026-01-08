@@ -10,4 +10,13 @@ export class UpdateUserDto {
   @IsOptional()
   @IsString()
   readonly displayName?: string;
+
+  @ApiProperty({
+    description: "The user's full name",
+    example: 'John Doe',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  readonly fullName?: string;
 }

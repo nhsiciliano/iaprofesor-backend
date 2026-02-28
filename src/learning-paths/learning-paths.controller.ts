@@ -2,6 +2,9 @@ import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { LearningPathsService } from './learning-paths.service';
+import { UpdateModuleProgressDto } from './dto/update-module-progress.dto';
+
+type SkillLevel = 'beginner' | 'intermediate' | 'advanced' | 'expert';
 
 @ApiTags('learning-paths')
 @UseGuards(AuthGuard('jwt'))
@@ -29,14 +32,19 @@ export class LearningPathsController {
       : undefined;
 
     const difficultyFilters = Array.isArray(difficulty)
-      ? (difficulty as string[])
+      ? difficulty
       : difficulty
       ? difficulty.split(',')
       : undefined;
 
+    const supportedDifficulties: SkillLevel[] = ['beginner', 'intermediate', 'advanced', 'expert'];
+    const normalizedDifficulty = difficultyFilters?.filter((item): item is SkillLevel =>
+      supportedDifficulties.includes(item as SkillLevel),
+    );
+
     return this.learningPathsService.findAll({
       subjects: subjectFilters,
-      difficulty: difficultyFilters as any,
+      difficulty: normalizedDifficulty,
       limit: limit ? parseInt(limit, 10) : undefined,
       search,
     });
@@ -98,7 +106,7 @@ export class UserLearningPathsController {
     @Req() req,
     @Param('pathId') pathId: string,
     @Param('moduleId') moduleId: string,
-    @Body() body: { progress: number; timeSpent?: number; score?: number },
+    @Body() body: UpdateModuleProgressDto,
   ) {
     const userId = req.user.sub;
     return this.learningPathsService.updateModuleProgress(userId, pathId, moduleId, body);

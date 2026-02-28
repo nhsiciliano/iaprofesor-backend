@@ -1,8 +1,20 @@
-import { Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { createClient } from '@supabase/supabase-js';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { SupabaseClient } from '@supabase/supabase-js';
+
+export interface JwtUserPayload {
+  sub: string;
+  email: string | null;
+  user_metadata: Record<string, unknown> | null;
+}
 
 /**
  * ARQUITECTURA BACKEND-FOCUSED:
@@ -13,16 +25,26 @@ import { SupabaseClient } from '@supabase/supabase-js';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   private supabase: SupabaseClient;
 
   constructor(
     private configService: ConfigService,
     private prisma: PrismaService,
   ) {
+    const supabaseUrl = this.configService.get<string>('SUPABASE_URL');
+    const serviceRoleKey =
+      this.configService.get<string>('SUPABASE_SERVICE_ROLE_KEY') ??
+      this.configService.get<string>('SUPABASE_KEY');
+
+    if (!supabaseUrl || !serviceRoleKey) {
+      throw new InternalServerErrorException('Supabase configuration is missing');
+    }
+
     // Cliente Supabase para validaciones del lado servidor
     this.supabase = createClient(
-      this.configService.get<string>('SUPABASE_URL'),
-      this.configService.get<string>('SUPABASE_KEY'),
+      supabaseUrl,
+      serviceRoleKey,
       {
         auth: {
           autoRefreshToken: false, // No manejar refresh en backend
@@ -36,7 +58,7 @@ export class AuthService {
    * Validar JWT token de Supabase
    * Usado por la estrategia JWT
    */
-  async validateToken(token: string) {
+  async validateToken(token: string): Promise<JwtUserPayload | null> {
     try {
       const { data, error } = await this.supabase.auth.getUser(token);
 
@@ -52,9 +74,8 @@ export class AuthService {
         sub: data.user.id,
         email: data.user.email,
         user_metadata: data.user.user_metadata,
-        ...data.user,
       };
-    } catch (error) {
+    } catch {
       return null;
     }
   }
@@ -83,8 +104,8 @@ export class AuthService {
 
       return user;
     } catch (error) {
-      console.error('Error managing user profile:', error);
-      throw new Error('Error al gestionar perfil de usuario');
+      this.logger.error('Error managing user profile', error instanceof Error ? error.stack : undefined);
+      throw new InternalServerErrorException('Error al gestionar perfil de usuario');
     }
   }
 
@@ -103,8 +124,8 @@ export class AuthService {
         ...localUser,
       };
     } catch (error) {
-      console.error('Error fetching current user:', error);
-      return null;
+      this.logger.error('Error fetching current user', error instanceof Error ? error.stack : undefined);
+      throw new InternalServerErrorException('Error al obtener el usuario actual');
     }
   }
 
@@ -113,14 +134,14 @@ export class AuthService {
    * @deprecated Use frontend Supabase auth directly
    */
   async signUp(email: string, password: string, _fullName: string) {
-    console.warn('AuthService.signUp is deprecated. Use frontend Supabase auth.');
+    this.logger.warn('AuthService.signUp is deprecated. Use frontend Supabase auth.');
     const { data, error } = await this.supabase.auth.signUp({
       email,
       password,
     });
 
     if (error) {
-      throw new Error(error.message);
+      throw new BadRequestException(error.message);
     }
 
     return data;
@@ -130,13 +151,13 @@ export class AuthService {
    * @deprecated Use frontend Supabase auth directly
    */
   async login(email: string, password: string) {
-    console.warn('AuthService.login is deprecated. Use frontend Supabase auth.');
+    this.logger.warn('AuthService.login is deprecated. Use frontend Supabase auth.');
     const { data, error } = await this.supabase.auth.signInWithPassword({
       email,
       password,
     });
     if (error) {
-      throw new Error(error.message);
+      throw new UnauthorizedException(error.message);
     }
     return data;
   }

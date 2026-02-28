@@ -24,7 +24,7 @@ export class LevelingService {
         // Formula: level = (xp / 100)^(1/1.5)
         // We assume level starts at 1
         if (xp < 0) return 1;
-        let level = Math.floor(Math.pow(xp / 100, 1 / 1.5));
+        const level = Math.floor(Math.pow(xp / 100, 1 / 1.5));
         return Math.max(1, level);
     }
 

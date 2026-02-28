@@ -2,6 +2,8 @@ import { Controller, Post, Body, Get, UseGuards, Req } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiOperation, ApiResponse, ApiBody, ApiBearerAuth } from '@nestjs/swagger';
+import { LegacySignupDto } from './dto/legacy-signup.dto';
+import { LegacyLoginDto } from './dto/legacy-login.dto';
 
 /**
  * CONTROLADOR DE AUTENTICACIÓN - ARQUITECTURA FRONTEND-FIRST
@@ -104,11 +106,11 @@ export class AuthController {
     }
   })
   @ApiResponse({ status: 400, description: 'Solicitud incorrecta.' })
-  async signup(@Body() { email, password, fullName }) {
+  async signup(@Body() payload: LegacySignupDto) {
     console.warn('⚠️  USANDO ENDPOINT DEPRECADO: /auth/signup');
     console.warn('   ➡️  Migre a autenticación frontend con Supabase');
     
-    const result = await this.authService.signUp(email, password, fullName);
+    const result = await this.authService.signUp(payload.email, payload.password, payload.fullName);
     
     return {
       ...result,
@@ -144,11 +146,11 @@ export class AuthController {
     }
   })
   @ApiResponse({ status: 401, description: 'Credenciales incorrectas.' })
-  async login(@Body() { email, password }) {
+  async login(@Body() payload: LegacyLoginDto) {
     console.warn('⚠️  USANDO ENDPOINT DEPRECADO: /auth/login');
     console.warn('   ➡️  Migre a autenticación frontend con Supabase');
     
-    const result = await this.authService.login(email, password);
+    const result = await this.authService.login(payload.email, payload.password);
     
     return {
       ...result,

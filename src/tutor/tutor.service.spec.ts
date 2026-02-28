@@ -1,23 +1,38 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { TutorMessageService } from './tutor-message.service';
+import { TutorProgressService } from './tutor-progress.service';
 import { TutorService } from './tutor.service';
-import { PrismaService } from '../prisma/prisma.service';
-import { AiService } from '../ai/ai.service';
-import { UnauthorizedException } from '@nestjs/common';
+import { TutorSessionService } from './tutor-session.service';
+import { TutorStreamingService } from './tutor-streaming.service';
+import { TutorSubjectsService } from './tutor-subjects.service';
 
-// Mock data and services
-const mockPrismaService = {
-  chatSession: {
-    create: jest.fn(),
-    findUnique: jest.fn(),
-  },
-  chatMessage: {
-    create: jest.fn(),
-    findMany: jest.fn(),
-  },
+const mockTutorSubjectsService = {
+  loadSubjects: jest.fn(),
+  updateSubject: jest.fn(),
+  getAvailableSubjects: jest.fn(),
+  getAllSubjectsForAdmin: jest.fn(),
 };
 
-const mockAiService = {
-  getTutorResponse: jest.fn(),
+const mockTutorSessionService = {
+  createChatSession: jest.fn(),
+  getMessages: jest.fn(),
+  getUserSessions: jest.fn(),
+  updateSessionDuration: jest.fn(),
+};
+
+const mockTutorMessageService = {
+  addMessage: jest.fn(),
+  createUserMessage: jest.fn(),
+};
+
+const mockTutorStreamingService = {
+  addMessageStream: jest.fn(),
+  addMessageStreamFromMessage: jest.fn(),
+};
+
+const mockTutorProgressService = {
+  getSubjectProgress: jest.fn(),
+  getSubjectProgressBySubject: jest.fn(),
 };
 
 describe('TutorService', () => {
@@ -27,14 +42,11 @@ describe('TutorService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         TutorService,
-        {
-          provide: PrismaService,
-          useValue: mockPrismaService,
-        },
-        {
-          provide: AiService,
-          useValue: mockAiService,
-        },
+        { provide: TutorSubjectsService, useValue: mockTutorSubjectsService },
+        { provide: TutorSessionService, useValue: mockTutorSessionService },
+        { provide: TutorMessageService, useValue: mockTutorMessageService },
+        { provide: TutorStreamingService, useValue: mockTutorStreamingService },
+        { provide: TutorProgressService, useValue: mockTutorProgressService },
       ],
     }).compile();
 
@@ -46,73 +58,23 @@ describe('TutorService', () => {
     expect(service).toBeDefined();
   });
 
-  describe('createChatSession', () => {
-    it('should create a new chat session for a user', async () => {
-      const userId = 'user-123';
-      const session = { id: 'session-123', userId, createdAt: new Date() };
-      mockPrismaService.chatSession.create.mockResolvedValue(session);
+  it('delegates createChatSession to TutorSessionService', async () => {
+    const mockSession = { id: 'session-1', userId: 'user-1' };
+    mockTutorSessionService.createChatSession.mockResolvedValue(mockSession);
 
-      const result = await service.createChatSession(userId);
+    const result = await service.createChatSession('user-1', 'mathematics');
 
-      expect(mockPrismaService.chatSession.create).toHaveBeenCalledWith({ data: { userId } });
-      expect(result).toEqual(session);
-    });
+    expect(mockTutorSessionService.createChatSession).toHaveBeenCalledWith('user-1', 'mathematics');
+    expect(result).toEqual(mockSession);
   });
 
-  describe('getMessages', () => {
-    it('should return messages for an authorized user', async () => {
-      const sessionId = 'session-123';
-      const userId = 'user-123';
-      const session = { id: sessionId, userId };
-      const messages = [{ id: 'msg-1', content: 'Hello' }];
+  it('delegates addMessage to TutorMessageService', async () => {
+    const mockResponse = { userMessage: { id: 'u-1' }, assistantMessage: { id: 'a-1' } };
+    mockTutorMessageService.addMessage.mockResolvedValue(mockResponse);
 
-      mockPrismaService.chatSession.findUnique.mockResolvedValue(session);
-      mockPrismaService.chatMessage.findMany.mockResolvedValue(messages);
+    const result = await service.addMessage('session-1', 'user-1', 'hola');
 
-      const result = await service.getMessages(sessionId, userId);
-
-      expect(mockPrismaService.chatSession.findUnique).toHaveBeenCalledWith({ where: { id: sessionId } });
-      expect(mockPrismaService.chatMessage.findMany).toHaveBeenCalledWith({ where: { sessionId }, orderBy: { createdAt: 'asc' } });
-      expect(result).toEqual(messages);
-    });
-
-    it('should throw UnauthorizedException for a non-existent session', async () => {
-      mockPrismaService.chatSession.findUnique.mockResolvedValue(null);
-      await expect(service.getMessages('session-123', 'user-123')).rejects.toThrow(UnauthorizedException);
-    });
-
-    it('should throw UnauthorizedException if user does not own the session', async () => {
-      const session = { id: 'session-123', userId: 'another-user' };
-      mockPrismaService.chatSession.findUnique.mockResolvedValue(session);
-      await expect(service.getMessages('session-123', 'user-123')).rejects.toThrow(UnauthorizedException);
-    });
-  });
-
-  describe('addMessage', () => {
-    it('should save user message, get and save AI response, and return it', async () => {
-      const sessionId = 'session-123';
-      const userId = 'user-123';
-      const content = 'What is NestJS?';
-      const session = { id: sessionId, userId };
-      const aiResponseContent = 'It is a framework for building efficient, scalable Node.js server-side applications.';
-      const aiMessage = { id: 'msg-2', content: aiResponseContent, isUserMessage: false };
-
-      mockPrismaService.chatSession.findUnique.mockResolvedValue(session);
-      mockAiService.getTutorResponse.mockResolvedValue(aiResponseContent);
-      mockPrismaService.chatMessage.create.mockResolvedValueOnce({ id: 'msg-1', content, isUserMessage: true }); // User message
-      mockPrismaService.chatMessage.create.mockResolvedValueOnce(aiMessage); // AI message
-
-      const result = await service.addMessage(sessionId, userId, content);
-
-      expect(mockPrismaService.chatMessage.create).toHaveBeenCalledTimes(2);
-      expect(mockAiService.getTutorResponse).toHaveBeenCalledWith(content, expect.any(String));
-      expect(result).toEqual(aiMessage);
-    });
-
-    it('should throw UnauthorizedException if user does not own the session', async () => {
-        const session = { id: 'session-123', userId: 'another-user' };
-        mockPrismaService.chatSession.findUnique.mockResolvedValue(session);
-        await expect(service.addMessage('session-123', 'user-123', 'test')).rejects.toThrow(UnauthorizedException);
-      });
+    expect(mockTutorMessageService.addMessage).toHaveBeenCalledWith('session-1', 'user-1', 'hola', []);
+    expect(result).toEqual(mockResponse);
   });
 });

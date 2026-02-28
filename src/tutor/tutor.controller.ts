@@ -15,9 +15,11 @@ import { TutorService } from './tutor.service';
 import { AuthGuard } from '@nestjs/passport';
 import { CreateMessageDto } from './dto/create-message.dto';
 import { CreateSessionDto } from './dto/create-session.dto';
+import { UpdateSessionDurationDto } from './dto/update-session-duration.dto';
 import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiParam, ApiQuery } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Observable, map } from 'rxjs';
+import type { SerializedTutorStreamEvent } from './tutor-stream.types';
 
 @ApiTags('tutor')
 @ApiBearerAuth()
@@ -133,7 +135,7 @@ export class TutorController {
   async updateSessionDuration(
     @Param('id') sessionId: string,
     @Req() req,
-    @Body() durationDto: { durationSeconds: number },
+    @Body() durationDto: UpdateSessionDurationDto,
   ) {
     const userId = req.user.sub;
     return this.tutorService.updateSessionDuration(sessionId, userId, durationDto.durationSeconds);
@@ -161,9 +163,9 @@ export class TutorController {
     }
 
     return this.tutorService.addMessageStreamFromMessage(sessionId, userId, messageId).pipe(
-      map((data): MessageEvent => ({
-        type: data.event,
-        data: data.data,
+      map((streamEvent: SerializedTutorStreamEvent): MessageEvent => ({
+        type: streamEvent.event,
+        data: streamEvent.data,
       })),
     );
   }

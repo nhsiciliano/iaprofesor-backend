@@ -1,10 +1,12 @@
 
-import { Injectable, CanActivate, ExecutionContext, ForbiddenException } from '@nestjs/common';
+import { Injectable, CanActivate, ExecutionContext, ForbiddenException, Logger } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { ROLES_KEY } from './roles.decorator';
 
 @Injectable()
 export class RolesGuard implements CanActivate {
+    private readonly logger = new Logger(RolesGuard.name);
+
     constructor(private reflector: Reflector) { }
 
     canActivate(context: ExecutionContext): boolean {
@@ -21,8 +23,8 @@ export class RolesGuard implements CanActivate {
         const { user } = context.switchToHttp().getRequest();
 
         if (!user || !user.role) {
-            console.warn('RolesGuard: User or role not found in request');
-            return false;
+            this.logger.warn('User or role not found in request context');
+            throw new ForbiddenException('Access denied. Missing role context');
         }
 
         const hasRole = requiredRoles.some((role) => user.role === role);

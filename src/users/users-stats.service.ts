@@ -349,7 +349,7 @@ export class UsersStatsService {
 
       // Contar días consecutivos
       let streak = 0;
-      let currentDate = new Date();
+      const currentDate = new Date();
 
       for (const dateStr of uniqueDates) {
         const expectedDate = new Date(currentDate);

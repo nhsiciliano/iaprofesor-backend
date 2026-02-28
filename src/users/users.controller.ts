@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Delete, Body, UseGuards, Req, Query, Param } from '@nestjs/common';
+import { Controller, DefaultValuePipe, Delete, Body, Get, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { UsersStatsService } from './users-stats.service';
 import { AuthGuard } from '@nestjs/passport';
@@ -9,7 +9,20 @@ import { UpdateGoalStatusDto } from './dto/update-goal-status.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateUserProfileDto } from './dto/update-user-profile.dto';
 import { CreateUserProfileDto } from './dto/create-user-profile.dto';
+import { TrackUserActivityDto } from './dto/track-user-activity.dto';
 import { Prisma } from '@prisma/client';
+
+type UserStatsPayload = {
+  sessionsCompleted?: number;
+  messagesSent?: number;
+  conceptsLearned?: number;
+  achievementsUnlocked?: number;
+  currentStreak?: number;
+  studyTimeMinutes?: number;
+  averageSessionDuration?: number;
+  favoriteSubjects?: unknown[];
+  lastActivity?: string;
+};
 
 @ApiTags('users')
 @ApiBearerAuth()
@@ -184,12 +197,11 @@ export class UsersController {
   @ApiQuery({ name: 'subject', required: false })
   async getRecentSessions(
     @Req() req,
-    @Query('limit') limit?: string,
+    @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit: number,
     @Query('subject') subject?: string,
   ) {
     const userId = req.user.sub;
-    const take = limit ? parseInt(limit, 10) : 10;
-    return this.usersStatsService.getRecentSessions(userId, take, subject);
+    return this.usersStatsService.getRecentSessions(userId, limit, subject);
   }
 
   @Get('me/analytics')
@@ -222,7 +234,7 @@ export class UsersController {
   @Post('me/activity')
   @ApiOperation({ summary: 'Registrar actividad del usuario' })
   @ApiResponse({ status: 201, description: 'Actividad registrada exitosamente' })
-  async trackUserActivity(@Req() req, @Body() activityData: any) {
+  async trackUserActivity(@Req() req, @Body() activityData: TrackUserActivityDto) {
     const userId = req.user.sub;
     // Por ahora solo logeamos la actividad, luego podemos implementar persistencia
     console.log(`User ${userId} activity:`, activityData);
@@ -339,7 +351,7 @@ export class UsersController {
     };
   }
 
-  private resolvePreferences(rawPreferences?: any) {
+  private resolvePreferences(rawPreferences?: Prisma.JsonValue) {
     const defaults = {
       language: 'es',
       timezone: 'UTC',
@@ -353,24 +365,26 @@ export class UsersController {
       subjectsOfInterest: [],
     };
 
-    if (!rawPreferences || typeof rawPreferences !== 'object') {
+    if (!rawPreferences || typeof rawPreferences !== 'object' || Array.isArray(rawPreferences)) {
       return defaults;
     }
 
+    const preferences = rawPreferences as Record<string, unknown>;
+
     return {
       ...defaults,
-      ...rawPreferences,
+      ...preferences,
       notifications: {
         ...defaults.notifications,
-        ...(rawPreferences.notifications ?? {}),
+        ...((preferences.notifications as Record<string, unknown> | undefined) ?? {}),
       },
-      subjectsOfInterest: Array.isArray(rawPreferences.subjectsOfInterest)
-        ? rawPreferences.subjectsOfInterest
+      subjectsOfInterest: Array.isArray(preferences.subjectsOfInterest)
+        ? preferences.subjectsOfInterest
         : defaults.subjectsOfInterest,
     };
   }
 
-  private mapStats(stats: any) {
+  private mapStats(stats: UserStatsPayload | undefined) {
     return {
       totalSessions: Number(stats?.sessionsCompleted ?? 0),
       totalMessages: Number(stats?.messagesSent ?? 0),

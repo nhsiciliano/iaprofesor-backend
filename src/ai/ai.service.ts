@@ -4,12 +4,13 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
 import * as crypto from 'crypto';
+import { AiAttachment } from './ai.types';
 
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
   private genAI: GoogleGenerativeAI;
-  private model: any;
+  private model: ReturnType<GoogleGenerativeAI['getGenerativeModel']>;
   private modelName: string;
 
   constructor(
@@ -44,7 +45,7 @@ export class AiService {
   async getTutorResponse(
     message: string,
     systemPrompt: string,
-    attachments: any[] = [],
+    attachments: AiAttachment[] = [],
   ): Promise<string> {
     try {
       const cacheKey = this.generateCacheKey(message, systemPrompt);
@@ -67,7 +68,7 @@ ${message}
 --- RESPUESTA DEL TUTOR ---
 Como tutor especializado, responde siguiendo la metodología socrática:`;
 
-      const parts: any[] = [fullPrompt];
+      const parts: (string | { inlineData: { data: string; mimeType: string } })[] = [fullPrompt];
 
       if (attachments && attachments.length > 0) {
         attachments.forEach(att => {
@@ -108,7 +109,7 @@ Como tutor especializado, responde siguiendo la metodología socrática:`;
   async *getTutorResponseStream(
     message: string,
     systemPrompt: string,
-    attachments: any[] = [],
+    attachments: AiAttachment[] = [],
   ): AsyncGenerator<{ type: 'chunk' | 'done' | 'error'; content: string }> {
     try {
       const cacheKey = this.generateCacheKey(message, systemPrompt);
@@ -141,7 +142,7 @@ ${message}
 --- RESPUESTA DEL TUTOR ---
 Como tutor especializado, responde siguiendo la metodología socrática:`;
 
-      const parts: any[] = [fullPrompt];
+      const parts: (string | { inlineData: { data: string; mimeType: string } })[] = [fullPrompt];
 
       if (attachments && attachments.length > 0) {
         attachments.forEach(att => {
@@ -200,4 +201,3 @@ Como tutor especializado, responde siguiendo la metodología socrática:`;
     return fallbackResponses[subject] || fallbackResponses.general;
   }
 }
-
